@@ -1,0 +1,237 @@
+# Data management
+# ------------------------------------------------------------------------------
+import numpy as np
+import pandas as pd
+
+# Graphics
+# ------------------------------------------------------------------------------
+import matplotlib.pyplot as plt
+
+# Preprocessing and modelling
+# ------------------------------------------------------------------------------
+from sklearn.neural_network import MLPRegressor
+from sklearn.compose import ColumnTransformer
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import MinMaxScaler
+from sklearn.compose import make_column_selector
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import mean_squared_error
+from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import KFold
+from sklearn import set_config
+import multiprocessing
+
+from sklearn.metrics import accuracy_score
+from sklearn import metrics 
+
+
+# Configuración warnings
+# ------------------------------------------------------------------------------
+import warnings
+#warnings.filterwarnings('once')
+warnings.filterwarnings('ignore')
+
+#Chess
+#--------------------------------------------
+import chess
+
+
+
+# Data Loading
+#Evaluation is x100
+
+#training data
+data_ini = pd.read_csv('chessData.csv')
+data_ini = data_ini.sample(n = 10000)
+data_ini.head()
+
+#Get the position data
+poss=[]
+for i in range(len(data_ini)):
+    evaluation=data_ini.iloc[i]['Evaluation']
+    if ('#' in evaluation):
+        poss.append(i)
+indexes_to_keep = set(range(data_ini.shape[0])) - set(poss)
+data_train = data_ini.take(list(indexes_to_keep))
+data_train.head()
+
+#Get the evaluation data for the training
+y_train=data_train[["Evaluation"]]
+y_train=y_train.astype(np.int64)
+y_train.head()
+
+#Normalizing data
+from sklearn.preprocessing import MinMaxScaler
+scaler = MinMaxScaler(feature_range=(-1, 1))
+y_train = scaler.fit_transform(y_train)
+data_position=data_train["FEN"]
+data=data_train["FEN"].str.split(expand=True)
+data.columns = ['position', 'move_color', 'castle',
+       'enPassant','4','5']
+data=data.drop(['position'],axis=1)
+data=data.drop(['enPassant'],axis=1)
+data=data.drop(['4'],axis=1)
+data=data.drop(['5'],axis=1)
+data.head()
+for i in range(len(data)):
+    castling=data.iloc[i]['castle']
+    n=0
+    if ('q' in castling):
+        n=n+2**0
+    if ('k' in castling):
+        n=n+2**1
+    if ('Q' in castling):
+        n=n+2**2
+    if ('K' in castling):
+        n=n+2**3
+    data.iloc[i]['castle']=format(n,'04b')
+data_t=data['castle'].apply(lambda x: pd.Series(list(x)))
+data=data.drop(['castle'],axis=1)
+for i in range(4):
+    data = pd.merge(data, data_t[i], left_index=True, right_index=True, how='left')
+data = data.rename({0: 'K', 1: 'Q',2:'k',3:'q'}, axis=1) 
+data.head() 
+
+#Change move_color to numbers (1 for white - 0 for black)
+for i in range(len(data)):
+    if(data.iloc[i]['move_color']=='b'):
+        data.iloc[i]['move_color']=0
+    else:
+        data.iloc[i]['move_color']=1
+data.head()
+
+#Change position data to a number
+for i in range(len(data_position)):
+    
+    position=data_position.iloc[i]
+    board = chess.Board(position)
+
+    WP = board.pieces(chess.PAWN, chess.WHITE)
+    BP = board.pieces(chess.PAWN, chess.BLACK)
+    WB = board.pieces(chess.BISHOP, chess.WHITE)
+    BB = board.pieces(chess.BISHOP, chess.BLACK)
+    WN = board.pieces(chess.KNIGHT, chess.WHITE)
+    BN = board.pieces(chess.KNIGHT, chess.BLACK)
+    WR = board.pieces(chess.ROOK, chess.WHITE)
+    BR = board.pieces(chess.ROOK, chess.BLACK)
+    WQ = board.pieces(chess.QUEEN, chess.WHITE)
+    BQ = board.pieces(chess.QUEEN, chess.BLACK)
+    WK = board.pieces(chess.KING, chess.WHITE)
+    BK = board.pieces(chess.KING, chess.BLACK)
+    data_position.iloc[i]=[format(int(WP),'064b'),format(int(BP),'064b'),format(int(WB),'064b'),format(int(BB),'064b'),
+                           format(int(WN),'064b'),format(int(BN),'064b'),format(int(WR),'064b'),format(int(BR),'064b'),
+                           format(int(WQ),'064b'),format(int(BQ),'064b'),format(int(WK),'064b'),format(int(BK),'064b')]
+data_pr=data_position
+data_pr = pd.DataFrame(data_pr.tolist(), index= data_pr.index)
+data_pr.head()
+data_t=data_pr[0].apply(lambda x: pd.Series(list(x)))
+for i in range(11):
+    data_t2=data_pr[i+1].apply(lambda x: pd.Series(list(x)))
+    data_t = pd.merge(data_t, data_t2, left_index=True, right_index=True, how='left')
+for i in range(data_t.shape[1]):
+    data_t.columns.values[i]=str(i)
+
+
+#Join the data
+color = data["move_color"]
+castleK = data["K"]
+castleQ = data["Q"]
+castlek = data["k"]
+castleq = data["q"]
+  
+X_train = data_position.join(color)
+X_train = X_train.join(castleK)
+X_train = X_train.join(castleQ)
+X_train = X_train.join(castlek)
+X_train = X_train.join(castleq)
+
+
+#Divide train and test
+from sklearn.model_selection import train_test_split
+X_train, X_test, y_train, y_test = train_test_split(
+                                        X_train,
+                                        y_train,
+                                        train_size   = 0.8,  
+                                        random_state = 123,
+                                        shuffle      = True
+                                    )
+
+# Pipeline of preproccssing and modelling
+# ==============================================================================
+
+# Identificación de columnas numéricas y categóricas
+numeric_cols = X_train.select_dtypes(include=['int64']).columns.to_list()
+cat_cols = X_train.select_dtypes(include=['object', 'category']).columns.to_list()
+
+
+# Transformaciones para las variables numéricas
+
+
+# Transformaciones para las variables categóricas
+categorical_transformer = Pipeline(
+                            steps=[('onehot', OneHotEncoder(handle_unknown='ignore'))]
+                          )
+
+preprocessor = ColumnTransformer(
+                    transformers=[
+                        ('cat', categorical_transformer, cat_cols)
+                    ],
+                    remainder='passthrough'
+                )
+
+# Se combinan los pasos de preprocesado y el modelo en un mismo pipeline
+pipe = Pipeline([('preprocessing', preprocessor),
+                 ('model', MLPRegressor(solver = 'lbfgs', max_iter= 1000))])
+
+
+# Espacio de búsqueda de cada hiperparámetro
+# ==============================================================================
+param_distributions = {
+    'model__hidden_layer_sizes': [(512,512,512)],
+    'model__alpha': np.logspace(-3, 3, 10),
+    'model__learning_rate_init': [0.001],
+}
+
+# Búsqueda por validación cruzada
+# ==============================================================================
+grid = RandomizedSearchCV(
+        estimator  = pipe,
+        param_distributions = param_distributions,
+        n_iter     = 50,
+        scoring    = 'neg_mean_squared_error',
+        n_jobs     = multiprocessing.cpu_count() - 1,
+        cv         = 5, 
+        verbose    = 0,
+        random_state = 123,
+        return_train_score = True
+       )
+
+grid.fit(X = X_train, y = y_train)
+
+# Resultados del grid
+# ==============================================================================
+resultados = pd.DataFrame(grid.cv_results_)
+resultados.filter(regex = '(param.*|mean_t|std_t)')\
+    .drop(columns = 'params')\
+    .sort_values('mean_test_score', ascending = False)\
+    .head(10)
+
+# best model selected
+
+model_final = grid.best_estimator_
+
+# Model training error
+#-------------------------------------------------------------------------------
+prediction_train = model_final.predict(X = X_train)
+
+
+#Measuring Goodness of fit in Training data
+
+print('R2 Value in training:', round(metrics.r2_score(y_train, prediction_train),2))
+
+#Measuring accuracy on Testing Data
+print('Accuracy in training',round((np.mean(np.abs((y_train - prediction_train)))), 2))
+      
+ 
+residuals_train=y_train - prediction_train
